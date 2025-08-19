@@ -5,7 +5,7 @@ from datetime import datetime
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config import (
     BOT_TOKEN, ADMIN_1_ID, ADMIN_2_ID, ADMIN_BOT_1_TOKEN, ADMIN_BOT_2_TOKEN,
-    ADMIN_1_NOTIFICATIONS_ENABLED, ADMIN_2_NOTIFICATIONS_ENABLED
+    ADMIN_1_NOTIFICATIONS_ENABLED, ADMIN_2_NOTIFICATIONS_ENABLED, SCRIPT_PASSWORD_MODE
 )
 from fabric import Connection
 from paramiko.ssh_exception import SSHException, AuthenticationException, NoValidConnectionsError
@@ -180,10 +180,16 @@ def handle_router_selection(call):
 def handle_script_selection(call):
     router_name, script = call.data.split('_')[1], call.data.split('_')[2]
 
-    # Запрос пароля для выполнения скрипта
-    bot.send_message(call.message.chat.id, f"Введите пароль для выполнения скрипта '{script}' на маршрутизаторе {router_name}:")
-    user_state[call.from_user.id]['script'] = script  # Сохраняем выбранный скрипт
-    user_state[call.from_user.id]['state'] = 'waiting_for_password'  # Переводим пользователя в состояние ввода пароля
+    if SCRIPT_PASSWORD_MODE:
+        # Режим с паролем
+        bot.send_message(call.message.chat.id, f"Введите пароль для выполнения скрипта '{script}' на маршрутизаторе {router_name}:")
+        user_state[call.from_user.id]['script'] = script
+        user_state[call.from_user.id]['state'] = 'waiting_for_password'
+    else:
+        # Режим с подтверждением
+        bot.send_message(call.message.chat.id, f"Вы действительно хотите выполнить скрипт '{script}' на маршрутизаторе {router_name}?\n\nОтправьте 'да' для подтверждения или 'нет' для отмены.")
+        user_state[call.from_user.id]['script'] = script
+        user_state[call.from_user.id]['state'] = 'waiting_for_confirmation'
 
 # Проверка пароля и выполнение скрипта
 @bot.message_handler(func=lambda message: message.chat.id in user_state and user_state[message.chat.id]['state'] == 'waiting_for_password')
@@ -217,11 +223,65 @@ def verify_password_and_execute(message):
 
             # Ответ пользователю
             bot.reply_to(message, f"Результат выполнения скрипта '{script}':\n{result}")
+            
+            # Очищаем состояние пользователя после успешного выполнения
+            if message.chat.id in user_state:
+                del user_state[message.chat.id]
         else:
             bot.reply_to(message, "Неверный пароль для выполнения скрипта. Попробуйте снова.")
             logging.warning(f"Пользователь {message.from_user.username} ввел неверный пароль для скрипта {script}.")
     else:
         bot.reply_to(message, "Ошибка: маршрутизатор не найден.")
+        # Очищаем состояние пользователя при ошибке
+        if message.chat.id in user_state:
+            del user_state[message.chat.id]
+
+# Обработка подтверждения пользователя (режим без пароля)
+@bot.message_handler(func=lambda message: message.chat.id in user_state and user_state[message.chat.id]['state'] == 'waiting_for_confirmation')
+def handle_confirmation_and_execute(message):
+    router_name = user_state[message.chat.id].get('router')
+    script = user_state[message.chat.id].get('script')
+    
+    # Проверяем ответ пользователя
+    if message.text.lower() in ['да', 'yes', 'y', '1', 'true']:
+        try:
+            with open('routers.json', 'r') as file:
+                routers = json.load(file)
+
+            router = routers.get(router_name)
+        except Exception as e:
+            logging.error(f"Ошибка при загрузке файла routers.json: {e}")
+            bot.reply_to(message, "Ошибка при загрузке данных о маршрутизаторах.")
+            return
+
+        if router:
+            # Выполняем скрипт без проверки пароля
+            ssh_client = RouterSSHClient(router["ip"], router["username"], router["ssh_password"], router["ssh_port"])
+            result = ssh_client.execute_script(script)
+
+            # Логирование
+            execution_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            log_message = f"Скрипт '{script}' был выполнен на маршрутизаторе '{router_name}' в {execution_time} (режим подтверждения)."
+            logging.info(log_message)
+
+            # Уведомление администраторов
+            notify_admins(execution_time, message.from_user.username, router_name, script)
+
+            # Ответ пользователю
+            bot.reply_to(message, f"Скрипт '{script}' выполнен успешно!\n\nРезультат:\n{result}")
+        else:
+            bot.reply_to(message, "Ошибка: маршрутизатор не найден.")
+    
+    elif message.text.lower() in ['нет', 'no', 'n', '0', 'false']:
+        bot.reply_to(message, "Выполнение скрипта отменено пользователем.")
+        logging.info(f"Пользователь {message.from_user.username} отменил выполнение скрипта {script} на маршрутизаторе {router_name}")
+    else:
+        bot.reply_to(message, "Пожалуйста, ответьте 'да' для подтверждения или 'нет' для отмены.")
+        return
+    
+    # Очищаем состояние пользователя
+    if message.chat.id in user_state:
+        del user_state[message.chat.id]
 
 # Уведомление администраторов
 def notify_admins(execution_time: str, username: str, router_name: str, script: str):
@@ -245,4 +305,5 @@ if __name__ == "__main__":
     logging.info("Бот запущен.")
     logging.info(f"Уведомления для ADMIN_1: {'включены' if ADMIN_1_NOTIFICATIONS_ENABLED else 'отключены'}")
     logging.info(f"Уведомления для ADMIN_2: {'включены' if ADMIN_2_NOTIFICATIONS_ENABLED else 'отключены'}")
+    logging.info(f"Режим запуска скриптов: {'с паролем' if SCRIPT_PASSWORD_MODE else 'с подтверждением'}")
     bot.polling(none_stop=True)

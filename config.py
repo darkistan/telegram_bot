@@ -7,3 +7,8 @@ ADMIN_BOT_2_TOKEN = "566211734:AAFjGzm98Np_MsU4YTBqJ0UY5gLa8CVLu9A"
 # True - уведомления включены, False - уведомления отключены
 ADMIN_1_NOTIFICATIONS_ENABLED = True  
 ADMIN_2_NOTIFICATIONS_ENABLED = False 
+
+# Режим запуска скриптов
+# True - запрашивать пароль для выполнения скрипта
+# False - запрашивать только подтверждение пользователя
+SCRIPT_PASSWORD_MODE = True 
