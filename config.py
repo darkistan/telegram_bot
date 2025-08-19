@@ -4,11 +4,11 @@ ADMIN_2_ID = "440127888"
 ADMIN_BOT_1_TOKEN = "566211734:AAFjGzm98Np_MsU4YTBqJ0UY5gLa8CVLu9A"
 ADMIN_BOT_2_TOKEN = "566211734:AAFjGzm98Np_MsU4YTBqJ0UY5gLa8CVLu9A"
 
-# True - уведомления включены, False - уведомления отключены
+# True - повідомлення включені, False - повідомлення відключені
 ADMIN_1_NOTIFICATIONS_ENABLED = True  
 ADMIN_2_NOTIFICATIONS_ENABLED = False 
 
-# Режим запуска скриптов
-# True - запрашивать пароль для выполнения скрипта
-# False - запрашивать только подтверждение пользователя
-SCRIPT_PASSWORD_MODE = True 
+# Режим запуску скриптів
+# True - запитувати пароль для виконання скрипта
+# False - запитувати тільки підтвердження користувача
+SCRIPT_PASSWORD_MODE =  True 
