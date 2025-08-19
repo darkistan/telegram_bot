@@ -3,7 +3,10 @@ import json
 import telebot
 from datetime import datetime
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
-from config import BOT_TOKEN, ADMIN_1_ID, ADMIN_2_ID, ADMIN_BOT_1_TOKEN, ADMIN_BOT_2_TOKEN
+from config import (
+    BOT_TOKEN, ADMIN_1_ID, ADMIN_2_ID, ADMIN_BOT_1_TOKEN, ADMIN_BOT_2_TOKEN,
+    ADMIN_1_NOTIFICATIONS_ENABLED, ADMIN_2_NOTIFICATIONS_ENABLED
+)
 from fabric import Connection
 from paramiko.ssh_exception import SSHException, AuthenticationException, NoValidConnectionsError
 
@@ -91,11 +94,14 @@ def request_access(message):
     admin_message = f"Пользователь {user_first_name} {user_last_name} ({user_name}) с ID {user_id} запросил доступ.\n" \
                     f"Пожалуйста, отредактируйте файл routers.json для предоставления доступа."
 
-    # Отправка сообщения администраторам
-    admin_bot_1 = telebot.TeleBot(ADMIN_BOT_1_TOKEN)
-    admin_bot_2 = telebot.TeleBot(ADMIN_BOT_2_TOKEN)
-    admin_bot_1.send_message(ADMIN_1_ID, admin_message)
-    admin_bot_2.send_message(ADMIN_2_ID, admin_message)
+    # Отправка сообщения администраторам с проверкой настроек
+    if ADMIN_1_NOTIFICATIONS_ENABLED:
+        admin_bot_1 = telebot.TeleBot(ADMIN_BOT_1_TOKEN)
+        admin_bot_1.send_message(ADMIN_1_ID, admin_message)
+    
+    if ADMIN_2_NOTIFICATIONS_ENABLED:
+        admin_bot_2 = telebot.TeleBot(ADMIN_BOT_2_TOKEN)
+        admin_bot_2.send_message(ADMIN_2_ID, admin_message)
 
     # Подтверждаем запрос пользователю
     bot.reply_to(message, "Ваш запрос на доступ отправлен администраторам. Ожидайте их решение.")
@@ -225,13 +231,18 @@ def notify_admins(execution_time: str, username: str, router_name: str, script: 
                     f"🌐 Маршрутизатор: {router_name}\n" \
                     f"🖥 Скрипт: {script}"
 
-    # Отправляем уведомление через оба бота
-    admin_bot_1 = telebot.TeleBot(ADMIN_BOT_1_TOKEN)
-    admin_bot_2 = telebot.TeleBot(ADMIN_BOT_2_TOKEN)
-    admin_bot_1.send_message(ADMIN_1_ID, admin_message)
-    admin_bot_2.send_message(ADMIN_2_ID, admin_message)
+    # Отправляем уведомление через боты с проверкой настроек
+    if ADMIN_1_NOTIFICATIONS_ENABLED:
+        admin_bot_1 = telebot.TeleBot(ADMIN_BOT_1_TOKEN)
+        admin_bot_1.send_message(ADMIN_1_ID, admin_message)
+    
+    if ADMIN_2_NOTIFICATIONS_ENABLED:
+        admin_bot_2 = telebot.TeleBot(ADMIN_BOT_2_TOKEN)
+        admin_bot_2.send_message(ADMIN_2_ID, admin_message)
 
 # Запуск бота
 if __name__ == "__main__":
     logging.info("Бот запущен.")
+    logging.info(f"Уведомления для ADMIN_1: {'включены' if ADMIN_1_NOTIFICATIONS_ENABLED else 'отключены'}")
+    logging.info(f"Уведомления для ADMIN_2: {'включены' if ADMIN_2_NOTIFICATIONS_ENABLED else 'отключены'}")
     bot.polling(none_stop=True)
