@@ -65,6 +65,10 @@ class RouterManager:
         user_routers = []
         
         for router_name, router_data in routers.items():
+            # Пропускаємо секцію адміністраторів та інші не-роутери
+            if router_name == 'admins' or not isinstance(router_data, dict):
+                continue
+            
             if self.user_has_access(user_id, router_name):
                 user_routers.append(router_name)
         
