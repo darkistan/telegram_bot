@@ -68,7 +68,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 router_manager = RouterManager()
 user_state_manager = UserStateManager()
 admin_notifier = AdminNotifier()
-access_manager = AccessManager()
+access_manager = AccessManager('routers.json')
 
 # Клас для роботи з SSH через Fabric
 class RouterSSHClient:
@@ -418,7 +418,32 @@ def handle_access_management(call):
         "Доступ до функцій управління доступом"
     )
     
-    action = call.data.split('_')[1]
+    # Розбираємо callback_data для визначення дії
+    parts = call.data.split('_')
+    if len(parts) >= 2:
+                    # Для складних дій типу router_details, view_users, add_user, etc.
+            if len(parts) >= 3 and parts[1] in ['router', 'view', 'add', 'remove', 'refresh']:
+                if parts[1] == 'router' and parts[2] == 'details':
+                    action = 'router_details'
+                elif parts[1] == 'view' and parts[2] == 'users':
+                    action = 'view_users'
+                elif parts[1] == 'add' and parts[2] == 'user':
+                    action = 'add_user'
+                elif parts[1] == 'remove' and parts[2] == 'user':
+                    action = 'remove_user'
+                elif parts[1] == 'refresh' and parts[2] == 'router':
+                    action = 'refresh_router'
+                elif parts[1] == 'refresh' and parts[2] == 'cache':
+                    action = 'refresh'
+                else:
+                    action = parts[1]
+            elif len(parts) >= 3 and parts[1] == 'back' and parts[2] == 'to':
+                # access_back_to_list
+                action = 'back_to_list'
+            else:
+                action = parts[1]
+    else:
+        action = "unknown"
     
     # Обробка кнопки "Назад до списку роутерів"
     if call.data == "access_main_menu" or (len(call.data.split('_')) >= 3 and call.data.split('_')[1] == 'main' and call.data.split('_')[2] == 'menu'):
@@ -529,7 +554,7 @@ def handle_access_management(call):
     
     elif action == 'refresh':
         # Очищаємо кеш та отримуємо свіжі дані
-        access_manager.router_manager.clear_cache()
+        access_manager.clear_cache()
         routers_info = access_manager.get_all_routers_info()
         
         if routers_info:
@@ -548,7 +573,7 @@ def handle_access_management(call):
             bot.answer_callback_query(call.id, "❌ Помилка оновлення кешу")
     
     # Обробка дій з конкретним роутером
-    elif action == 'view':
+    elif action == 'view_users':
         # Формат: access_view_users_{router_name}
         parts = call.data.split('_', 3)
         if len(parts) >= 4:
@@ -595,7 +620,7 @@ def handle_access_management(call):
             router_name = parts[3]
             
             # Очищаємо кеш та отримуємо свіжі дані
-            access_manager.router_manager.clear_cache()
+            access_manager.clear_cache()
             routers_info = access_manager.get_all_routers_info()
             
             if router_name in routers_info:
@@ -714,6 +739,79 @@ def handle_access_management(call):
             )
         else:
             bot.answer_callback_query(call.id, "❌ Помилка: не вдалося отримати назву роутера")
+    
+    # Обробка callback-запитів для скриптів
+    elif action == 'viewscripts':
+        # Формат: access_viewscripts_{router_name}
+        parts = call.data.split('_', 2)
+        if len(parts) >= 3:
+            router_name = parts[2]
+            success, scripts = access_manager.get_router_scripts(router_name)
+            
+            if success and scripts:
+                scripts_list = "\n".join([f"• {script}" for script in scripts])
+                message_text = f"📜 **Скрипти роутера {router_name}**:\n\n{scripts_list}"
+            else:
+                message_text = f"📜 **У роутера {router_name} немає скриптів**"
+            
+            keyboard = access_manager.create_router_management_keyboard(router_name)
+            safe_edit_message_text(bot, message_text, call.message.chat.id, call.message.message_id, reply_markup=keyboard, parse_mode='Markdown')
+        else:
+            bot.answer_callback_query(call.id, "❌ Помилка: не вдалося отримати назву роутера")
+    
+    elif action == 'addscript':
+        # Формат: access_addscript_{router_name}
+        parts = call.data.split('_', 2)
+        if len(parts) >= 3:
+            router_name = parts[2]
+            user_state_manager.set_state(call.from_user.id, 'waiting_for_script_name_add', router_name=router_name)
+            
+            safe_edit_message_text(
+                bot,
+                f"📝 Введіть назву скрипта для додавання до роутера {router_name}:\n\n"
+                f"ℹ️ Назва може містити тільки літери, цифри, дефіс та підкреслення",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        else:
+            bot.answer_callback_query(call.id, "❌ Помилка: не вдалося отримати назву роутера")
+    
+    elif action == 'removescript':
+        # Формат: access_removescript_{router_name}
+        parts = call.data.split('_', 2)
+        if len(parts) >= 3:
+            router_name = parts[2]
+            user_state_manager.set_state(call.from_user.id, 'waiting_for_script_name_remove', router_name=router_name)
+            
+            safe_edit_message_text(
+                bot,
+                f"📝 Введіть назву скрипта для видалення з роутера {router_name}:",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        else:
+            bot.answer_callback_query(call.id, "❌ Помилка: не вдалося отримати назву роутера")
+    
+    elif action == 'separator':
+        # Ігноруємо розділювач
+        bot.answer_callback_query(call.id, "")
+    
+    elif action == 'back_to_list':
+        # Повертаємося до головного меню з переліком роутерів
+        keyboard = access_manager.create_management_keyboard()
+        
+        # Отримуємо загальну статистику для заголовка
+        routers_info = access_manager.get_all_routers_info()
+        total_routers = len(routers_info)
+        total_users = sum(info['users_count'] for info in routers_info.values())
+        
+        header_text = f"🔐 **Управління доступом користувачів**\n\n"
+        header_text += f"📊 **Загальна статистика:**\n"
+        header_text += f"🌐 Роутерів: {total_routers}\n"
+        header_text += f"👥 Користувачів: {total_users}\n\n"
+        header_text += f"📋 **Виберіть роутер для редагування користувачів:**"
+        
+        safe_edit_message_text(bot, header_text, call.message.chat.id, call.message.message_id, reply_markup=keyboard, parse_mode='Markdown')
 
 # Обробка введення ID користувача для додавання/видалення
 @bot.message_handler(func=lambda message: user_state_manager.get_state(message.from_user.id) and 
@@ -760,6 +858,74 @@ def handle_user_id_input(message):
             f"remove_user_{router_name}", 
             "SUCCESS" if success else "FAILED", 
             f"Спроба видалити користувача {user_id} з роутера {router_name}"
+        )
+    else:
+        bot.reply_to(message, "❌ Помилка: невідома дія")
+        user_state_manager.clear_user_state(message.from_user.id)
+        return
+    
+    if success:
+        # Створюємо клавіатуру для повернення до управління роутером
+        keyboard = access_manager.create_router_management_keyboard(router_name)
+        bot.reply_to(message, f"{message_text}\n\n🔙 Повертаюся до меню управління роутером {router_name}", 
+                    reply_markup=keyboard)
+    else:
+        bot.reply_to(message, message_text)
+    
+    # Очищаємо стан користувача
+    user_state_manager.clear_user_state(message.from_user.id)
+
+# Обробка введення назв скриптів для додавання/видалення
+@bot.message_handler(func=lambda message: user_state_manager.get_state(message.from_user.id) and 
+                    user_state_manager.get_state(message.from_user.id).startswith('waiting_for_script_name_'))
+def handle_script_name_input(message):
+    state = user_state_manager.get_state(message.from_user.id)
+    
+    # Визначаємо дію
+    if state == 'waiting_for_script_name_add':
+        action = 'add_script'
+    elif state == 'waiting_for_script_name_remove':
+        action = 'remove_script'
+    else:
+        action = 'unknown'
+    
+    router_name = user_state_manager.get_user_data(message.from_user.id, 'router_name')
+    script_name = message.text.strip()
+    
+    if not router_name:
+        bot.reply_to(message, "❌ Помилка: не вдалося отримати назву роутера")
+        user_state_manager.clear_user_state(message.from_user.id)
+        return
+    
+    if not access_manager.validate_script_name(script_name):
+        bot.reply_to(message, "❌ Помилка: некоректна назва скрипта\n\n"
+                              "ℹ️ Назва може містити тільки:\n"
+                              "• Літери (a-z, A-Z)\n"
+                              "• Цифри (0-9)\n"
+                              "• Дефіс (-)\n"
+                              "• Підкреслення (_)\n"
+                              "• Довжина: 1-50 символів")
+        return
+    
+    if action == 'add_script':
+        success, message_text = access_manager.add_script_to_router(router_name, script_name)
+        # Логуємо спробу додавання скрипта
+        log_access_attempt(
+            message.from_user.id, 
+            message.from_user.username, 
+            f"add_script_{router_name}", 
+            "SUCCESS" if success else "FAILED", 
+            f"Спроба додати скрипт {script_name} до роутера {router_name}"
+        )
+    elif action == 'remove_script':
+        success, message_text = access_manager.remove_script_from_router(router_name, script_name)
+        # Логуємо спробу видалення скрипта
+        log_access_attempt(
+            message.from_user.id, 
+            message.from_user.username, 
+            f"remove_script_{router_name}", 
+            "SUCCESS" if success else "FAILED", 
+            f"Спроба видалити скрипт {script_name} з роутера {router_name}"
         )
     else:
         bot.reply_to(message, "❌ Помилка: невідома дія")

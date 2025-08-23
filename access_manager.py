@@ -1,28 +1,27 @@
 import json
 import logging
-from typing import Dict, List, Optional, Tuple
-from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
+from typing import Dict, List, Tuple, Any, Optional
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from router_manager import RouterManager
 
 class AccessManager:
     """Клас для управління доступом користувачів до роутерів"""
     
-    def __init__(self, config_file: str = 'routers.json'):
+    def __init__(self, config_file: str):
         self.config_file = config_file
         self.router_manager = RouterManager(config_file)
     
     def is_admin(self, user_id: int) -> bool:
         """Перевіряє, чи є користувач адміністратором"""
-        # Отримуємо список адміністраторів з конфігурації
+        # Отримуємо список адміністраторів через router_manager
         admin_ids = self._get_admin_ids()
         return str(user_id) in admin_ids
     
     def _get_admin_ids(self) -> List[str]:
-        """Отримує список ID адміністраторів"""
+        """Отримує список ID адміністраторів через кеш"""
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as file:
-                config = json.load(file)
-                return config.get('admins', ['440127888'])  # За замовчуванням
+            routers = self.router_manager.get_routers()
+            return routers.get('admins', ['440127888'])  # За замовчуванням
         except Exception as e:
             logging.error(f"Помилка отримання списку адміністраторів: {e}")
             return ['440127888']
@@ -30,25 +29,25 @@ class AccessManager:
     def add_user_access(self, router_name: str, user_id: str) -> Tuple[bool, str]:
         """Додає користувача до списку дозволених для роутера"""
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as file:
-                config = json.load(file)
+            # Отримуємо поточні дані через router_manager
+            routers = self.router_manager.get_routers()
             
-            if router_name not in config:
+            if router_name not in routers:
                 return False, f"Роутер '{router_name}' не знайдено"
             
-            if 'allowed_users' not in config[router_name]:
-                config[router_name]['allowed_users'] = []
+            if 'allowed_users' not in routers[router_name]:
+                routers[router_name]['allowed_users'] = []
             
-            if user_id in config[router_name]['allowed_users']:
+            if user_id in routers[router_name]['allowed_users']:
                 return False, f"Користувач {user_id} вже має доступ до роутера '{router_name}'"
             
-            config[router_name]['allowed_users'].append(user_id)
+            # Додаємо користувача
+            routers[router_name]['allowed_users'].append(user_id)
             
-            # Зберігаємо зміни
-            with open(self.config_file, 'w', encoding='utf-8') as file:
-                json.dump(config, file, indent=2, ensure_ascii=False)
+            # Зберігаємо зміни в файл
+            self._save_routers_to_file(routers)
             
-            # Очищаємо кеш роутерів
+            # Очищаємо кеш для оновлення даних
             self.router_manager.clear_cache()
             
             logging.info(f"Користувач {user_id} додано до роутера {router_name}")
@@ -61,25 +60,25 @@ class AccessManager:
     def remove_user_access(self, router_name: str, user_id: str) -> Tuple[bool, str]:
         """Видаляє користувача зі списку дозволених для роутера"""
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as file:
-                config = json.load(file)
+            # Отримуємо поточні дані через router_manager
+            routers = self.router_manager.get_routers()
             
-            if router_name not in config:
+            if router_name not in routers:
                 return False, f"Роутер '{router_name}' не знайдено"
             
-            if 'allowed_users' not in config[router_name]:
+            if 'allowed_users' not in routers[router_name]:
                 return False, f"У роутера '{router_name}' немає списку дозволених користувачів"
             
-            if user_id not in config[router_name]['allowed_users']:
+            if user_id not in routers[router_name]['allowed_users']:
                 return False, f"Користувач {user_id} не має доступу до роутера '{router_name}'"
             
-            config[router_name]['allowed_users'].remove(user_id)
+            # Видаляємо користувача
+            routers[router_name]['allowed_users'].remove(user_id)
             
-            # Зберігаємо зміни
-            with open(self.config_file, 'w', encoding='utf-8') as file:
-                json.dump(config, file, indent=2, ensure_ascii=False)
+            # Зберігаємо зміни в файл
+            self._save_routers_to_file(routers)
             
-            # Очищаємо кеш роутерів
+            # Очищаємо кеш для оновлення даних
             self.router_manager.clear_cache()
             
             logging.info(f"Користувач {user_id} видалено з роутера {router_name}")
@@ -90,28 +89,25 @@ class AccessManager:
             return False, f"Помилка видалення користувача: {e}"
     
     def get_router_users(self, router_name: str) -> Tuple[bool, List[str]]:
-        """Отримує список користувачів для конкретного роутера"""
+        """Отримує список користувачів для конкретного роутера через кеш"""
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as file:
-                config = json.load(file)
-            
-            if router_name not in config:
+            router = self.router_manager.get_router(router_name)
+            if not router:
                 return False, []
             
-            return True, config[router_name].get('allowed_users', [])
+            return True, router.get('allowed_users', [])
             
         except Exception as e:
             logging.error(f"Помилка отримання користувачів роутера {router_name}: {e}")
             return False, []
     
     def get_all_routers_info(self) -> Dict[str, Dict]:
-        """Отримує інформацію про всі роутери та їх користувачів"""
+        """Отримує інформацію про всі роутери та їх користувачів через кеш"""
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as file:
-                config = json.load(file)
+            routers = self.router_manager.get_routers()
             
             routers_info = {}
-            for router_name, router_data in config.items():
+            for router_name, router_data in routers.items():
                 # Пропускаємо секцію адміністраторів та інші не-роутери
                 if router_name == 'admins' or not isinstance(router_data, dict):
                     continue
@@ -133,7 +129,7 @@ class AccessManager:
         """Створює клавіатуру для управління доступом - одразу показує роутери"""
         keyboard = InlineKeyboardMarkup(row_width=1)
         
-        # Отримуємо список роутерів
+        # Отримуємо список роутерів через кеш
         routers = self.router_manager.get_routers()
         
         for router_name, router_data in routers.items():
@@ -148,31 +144,37 @@ class AccessManager:
             # Створюємо текст кнопки з інформацією
             button_text = f"🌐 {router_name}\n📡 {ip} | 👥 {users_count}"
             
-            callback_data = f"access_manage_{router_name}"
-            keyboard.add(InlineKeyboardButton(button_text, callback_data=callback_data))
+            keyboard.add(
+                InlineKeyboardButton(
+                    button_text,
+                    callback_data=f"access_router_details_{router_name}"
+                )
+            )
         
-        # Додаємо кнопки для роботи з кешем
+        # Додаємо кнопки управління
         keyboard.add(
-            InlineKeyboardButton("🔄 Оновити кеш", callback_data="access_refresh_cache"),
             InlineKeyboardButton("📊 Статистика", callback_data="access_stats")
+        )
+        keyboard.add(
+            InlineKeyboardButton("🔄 Оновити кеш", callback_data="access_refresh_cache")
         )
         
         return keyboard
     
     def create_router_management_keyboard(self, router_name: str) -> InlineKeyboardMarkup:
-        """Створює клавіатуру для управління конкретним роутером - 3 кнопки"""
+        """Створює клавіатуру для управління конкретним роутером"""
         keyboard = InlineKeyboardMarkup(row_width=1)
         
-        # Отримуємо список користувачів для цього роутера
-        success, users = self.get_router_users(router_name)
-        users_count = len(users) if success else 0
+        # Отримуємо дані роутера через кеш
+        router = self.router_manager.get_router(router_name)
+        if not router:
+            return keyboard
         
-        # Отримуємо основну інформацію про роутер
-        routers = self.router_manager.get_routers()
-        router_info = routers.get(router_name, {})
-        router_ip = router_info.get('ip', 'N/A')
+        # Отримуємо кількість користувачів та скриптів
+        users_count = len(router.get('allowed_users', []))
+        scripts_count = len(router.get('scripts', []))
         
-        # 3 основні кнопки як запитав користувач
+        # Кнопки управління користувачами
         keyboard.add(
             InlineKeyboardButton(f"👥 Активні користувачі ({users_count})", callback_data=f"access_view_users_{router_name}")
         )
@@ -182,49 +184,119 @@ class AccessManager:
         keyboard.add(
             InlineKeyboardButton("➖ Видалити користувача", callback_data=f"access_remove_user_{router_name}")
         )
+        
+        # Розділювач
         keyboard.add(
-            InlineKeyboardButton("🔙 Назад до списку роутерів", callback_data="access_main_menu")
+            InlineKeyboardButton("─" * 20, callback_data="access_separator")
+        )
+        
+        # Кнопки управління скриптами
+        keyboard.add(
+            InlineKeyboardButton(f"📜 Скрипти ({scripts_count})", callback_data=f"access_viewscripts_{router_name}")
+        )
+        keyboard.add(
+            InlineKeyboardButton("➕ Додати скрипт", callback_data=f"access_addscript_{router_name}")
+        )
+        keyboard.add(
+            InlineKeyboardButton("➖ Видалити скрипт", callback_data=f"access_removescript_{router_name}")
+        )
+        
+        # Кнопка оновлення кешу для конкретного роутера
+        keyboard.add(
+            InlineKeyboardButton("🔄 Оновити кеш роутера", callback_data=f"access_refresh_router_{router_name}")
+        )
+        
+        # Кнопка повернення
+        keyboard.add(
+            InlineKeyboardButton("⬅️ Назад до списку", callback_data="access_back_to_list")
         )
         
         return keyboard
     
-    def create_router_selection_keyboard(self, action: str) -> InlineKeyboardMarkup:
-        """Створює клавіатуру для вибору роутера"""
-        routers = self.router_manager.get_routers()
-        keyboard = InlineKeyboardMarkup(row_width=1)
-        
-        for router_name, router_data in routers.items():
-            # Пропускаємо секцію адміністраторів та інші не-роутери
-            if router_name == 'admins' or not isinstance(router_data, dict):
-                continue
+    def add_script_to_router(self, router_name: str, script_name: str) -> Tuple[bool, str]:
+        """Додає скрипт до роутера"""
+        try:
+            # Отримуємо поточні дані через router_manager
+            routers = self.router_manager.get_routers()
             
-            # Отримуємо додаткову інформацію про роутер
-            ip = router_data.get('ip', 'N/A')
-            users_count = len(router_data.get('allowed_users', []))
+            if router_name not in routers:
+                return False, f"Роутер '{router_name}' не знайдено"
             
-            # Створюємо текст кнопки з інформацією
-            button_text = f"🌐 {router_name}\n📡 {ip} | 👥 {users_count}"
+            if 'scripts' not in routers[router_name]:
+                routers[router_name]['scripts'] = []
             
-            callback_data = f"access_{action}_{router_name}"
-            keyboard.add(InlineKeyboardButton(button_text, callback_data=callback_data))
-        
-        keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="access_main_menu"))
-        
-        return keyboard
+            if script_name in routers[router_name]['scripts']:
+                return False, f"Скрипт '{script_name}' вже існує в роутері '{router_name}'"
+            
+            # Додаємо скрипт
+            routers[router_name]['scripts'].append(script_name)
+            
+            # Зберігаємо зміни в файл
+            self._save_routers_to_file(routers)
+            
+            # Очищаємо кеш для оновлення даних
+            self.router_manager.clear_cache()
+            
+            logging.info(f"Скрипт '{script_name}' додано до роутера {router_name}")
+            return True, f"Скрипт '{script_name}' успішно додано до роутера '{router_name}'"
+            
+        except Exception as e:
+            logging.error(f"Помилка додавання скрипта '{script_name}' до роутера {router_name}: {e}")
+            return False, f"Помилка додавання скрипта: {e}"
     
-    def create_general_info_keyboard(self) -> InlineKeyboardMarkup:
-        """Створює клавіатуру для загальної інформації"""
-        keyboard = InlineKeyboardMarkup(row_width=2)
+    def remove_script_from_router(self, router_name: str, script_name: str) -> Tuple[bool, str]:
+        """Видаляє скрипт з роутера"""
+        try:
+            # Отримуємо поточні дані через router_manager
+            routers = self.router_manager.get_routers()
+            
+            if router_name not in routers:
+                return False, f"Роутер '{router_name}' не знайдено"
+            
+            if 'scripts' not in routers[router_name]:
+                return False, f"У роутера '{router_name}' немає списку скриптів"
+            
+            if script_name not in routers[router_name]['scripts']:
+                return False, f"Скрипт '{script_name}' не знайдено в роутері '{router_name}'"
+            
+            # Видаляємо скрипт
+            routers[router_name]['scripts'].remove(script_name)
+            
+            # Зберігаємо зміни в файл
+            self._save_routers_to_file(routers)
+            
+            # Очищаємо кеш для оновлення даних
+            self.router_manager.clear_cache()
+            
+            logging.info(f"Скрипт '{script_name}' видалено з роутера {router_name}")
+            return True, f"Скрипт '{script_name}' успішно видалено з роутера '{router_name}'"
+            
+        except Exception as e:
+            logging.error(f"Помилка видалення скрипта '{script_name}' з роутера {router_name}: {e}")
+            return False, f"Помилка видалення скрипта: {e}"
+    
+    def get_router_scripts(self, router_name: str) -> Tuple[bool, List[str]]:
+        """Отримує список скриптів для конкретного роутера через кеш"""
+        try:
+            router = self.router_manager.get_router(router_name)
+            if not router:
+                return False, []
+            
+            scripts = router.get('scripts', [])
+            return True, scripts
+            
+        except Exception as e:
+            logging.error(f"Помилка отримання скриптів роутера {router_name}: {e}")
+            return False, []
+    
+    def validate_script_name(self, script_name: str) -> bool:
+        """Валідує назву скрипта"""
+        if not script_name or not script_name.strip():
+            return False
         
-        keyboard.add(
-            InlineKeyboardButton("📋 Список всіх користувачів", callback_data="access_list_all_users"),
-            InlineKeyboardButton("🌐 Інформація про всі роутери", callback_data="access_all_routers_info")
-        )
-        keyboard.add(
-            InlineKeyboardButton("🔙 Назад до меню", callback_data="access_main_menu")
-        )
-        
-        return keyboard
+        # Перевіряємо, чи не містить заборонені символи
+        forbidden_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+        return not any(char in script_name for char in forbidden_chars)
     
     def validate_user_id(self, user_id: str) -> bool:
         """Валідує ID користувача"""
@@ -236,20 +308,16 @@ class AccessManager:
         except ValueError:
             return False
     
-    def get_user_access_summary(self, user_id: str) -> str:
-        """Отримує зведення доступу користувача"""
-        routers = self.router_manager.get_routers()
-        user_routers = []
-        
-        for router_name, router_data in routers.items():
-            # Пропускаємо секцію адміністраторів та інші не-роутери
-            if router_name == 'admins' or not isinstance(router_data, dict):
-                continue
-            
-            if user_id in router_data.get('allowed_users', []):
-                user_routers.append(router_name)
-        
-        if not user_routers:
-            return f"Користувач {user_id} не має доступу до жодного роутера"
-        
-        return f"Користувач {user_id} має доступ до роутерів:\n" + "\n".join([f"• {router}" for router in user_routers]) 
+    def clear_cache(self):
+        """Очищає кеш router_manager"""
+        self.router_manager.clear_cache()
+    
+    def _save_routers_to_file(self, routers: Dict[str, Any]):
+        """Зберігає дані роутерів у файл"""
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as file:
+                json.dump(routers, file, indent=2, ensure_ascii=False)
+            logging.info(f"Дані роутерів збережено у файл {self.config_file}")
+        except Exception as e:
+            logging.error(f"Помилка збереження даних роутерів: {e}")
+            raise 
