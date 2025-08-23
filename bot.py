@@ -27,6 +27,40 @@ log_handler.setFormatter(formatter)
 logging.getLogger().addHandler(log_handler)
 logging.getLogger().setLevel(logging.INFO)
 
+# Створюємо окремий логер для спроб доступу
+access_logger = logging.getLogger('access_attempts')
+access_logger.setLevel(logging.INFO)
+access_logger.propagate = False  # Не передаємо логи в кореневий логер
+
+# Створюємо обробник для логу файлу спроб доступу
+access_handler = RotatingFileHandler('logs/access_attempts.log', maxBytes=5 * 1024 * 1024, backupCount=3)
+access_handler.setLevel(logging.INFO)
+access_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+access_handler.setFormatter(access_formatter)
+
+# Додаємо обробник до логера спроб доступу
+access_logger.addHandler(access_handler)
+
+def log_access_attempt(user_id, username, action, result, details=""):
+    """
+    Логує спробу доступу користувача
+    
+    :param user_id: ID користувача
+    :param username: Ім'я користувача
+    :param action: Дія, яку намагався виконати користувач
+    :param result: Результат спроби (SUCCESS/FAILED/BLOCKED)
+    :param details: Додаткові деталі
+    """
+    user_info = f"ID: {user_id}"
+    if username:
+        user_info += f" | Username: @{username}"
+    
+    log_message = f"ACCESS_ATTEMPT | {user_info} | Action: {action} | Result: {result}"
+    if details:
+        log_message += f" | Details: {details}"
+    
+    access_logger.info(log_message)
+
 # Ініціалізація бота для користувачів
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -108,8 +142,25 @@ def manage_access(message):
     """Обробник команди управління доступом користувачів"""
     # Перевіряємо, чи є користувач адміністратором
     if not access_manager.is_admin(message.from_user.id):
+        # Логуємо спробу доступу до забороненої функції
+        log_access_attempt(
+            message.from_user.id, 
+            message.from_user.username, 
+            "manage_access", 
+            "BLOCKED", 
+            "Спроба доступу до управління користувачами"
+        )
         bot.reply_to(message, MESSAGES['access_no_permission'])
         return
+    
+    # Логуємо успішний доступ
+    log_access_attempt(
+        message.from_user.id, 
+        message.from_user.username, 
+        "manage_access", 
+        "SUCCESS", 
+        "Доступ до управління користувачами"
+    )
     
     # Створюємо клавіатуру з переліком роутерів
     keyboard = access_manager.create_management_keyboard()
@@ -141,9 +192,26 @@ def send_router_selection(message):
     user_routers = router_manager.get_user_routers(message.from_user.id)
     
     if not user_routers:
+        # Логуємо спробу доступу без прав
+        log_access_attempt(
+            message.from_user.id, 
+            message.from_user.username, 
+            "run_script", 
+            "BLOCKED", 
+            "Немає доступу до жодного роутера"
+        )
         bot.reply_to(message, MESSAGES['no_access'])
         logging.info(LOG_MESSAGES['user_no_access'].format(message.from_user.username))
         return
+    
+    # Логуємо успішний доступ
+    log_access_attempt(
+        message.from_user.id, 
+        message.from_user.username, 
+        "run_script", 
+        "SUCCESS", 
+        f"Доступ до {len(user_routers)} роутерів"
+    )
     
     # Створюємо клавіатуру для вибору роутера
     keyboard = create_router_keyboard(user_routers)
@@ -162,10 +230,27 @@ def handle_router_selection(call):
 
     # Перевіряємо доступ користувача до роутера через кеш
     if not router_manager.user_has_access(call.from_user.id, router_name):
+        # Логуємо спробу доступу до забороненого роутера
+        log_access_attempt(
+            call.from_user.id, 
+            call.from_user.username, 
+            f"access_router_{router_name}", 
+            "BLOCKED", 
+            f"Спроба доступу до роутера {router_name}"
+        )
         bot.send_message(call.message.chat.id, MESSAGES['router_not_found'])
         logging.error(f"Маршрутизатор {router_name} не знайдено або користувач {call.from_user.username} не має доступу.")
         return
 
+    # Логуємо успішний доступ до роутера
+    log_access_attempt(
+        call.from_user.id, 
+        call.from_user.username, 
+        f"access_router_{router_name}", 
+        "SUCCESS", 
+        f"Доступ до роутера {router_name}"
+    )
+    
     # Логуємо вибір маршрутизатора
     logging.info(LOG_MESSAGES['user_selected_router'].format(call.from_user.username, router_name))
 
@@ -313,8 +398,25 @@ def handle_script_cancellation(message, router_name: str, script: str):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('access_'))
 def handle_access_management(call):
     if not access_manager.is_admin(call.from_user.id):
+        # Логуємо спробу доступу до забороненої функції
+        log_access_attempt(
+            call.from_user.id, 
+            call.from_user.username, 
+            f"access_callback_{call.data}", 
+            "BLOCKED", 
+            "Спроба доступу до функцій управління доступом"
+        )
         bot.answer_callback_query(call.id, "❌ У вас немає прав для управління доступом")
         return
+    
+    # Логуємо успішний доступ до функцій управління
+    log_access_attempt(
+        call.from_user.id, 
+        call.from_user.username, 
+        f"access_callback_{call.data}", 
+        "SUCCESS", 
+        "Доступ до функцій управління доступом"
+    )
     
     action = call.data.split('_')[1]
     
@@ -641,8 +743,24 @@ def handle_user_id_input(message):
     
     if action == 'add':
         success, message_text = access_manager.add_user_access(router_name, user_id)
+        # Логуємо спробу додавання користувача
+        log_access_attempt(
+            message.from_user.id, 
+            message.from_user.username, 
+            f"add_user_{router_name}", 
+            "SUCCESS" if success else "FAILED", 
+            f"Спроба додати користувача {user_id} до роутера {router_name}"
+        )
     elif action == 'remove':
         success, message_text = access_manager.remove_user_access(router_name, user_id)
+        # Логуємо спробу видалення користувача
+        log_access_attempt(
+            message.from_user.id, 
+            message.from_user.username, 
+            f"remove_user_{router_name}", 
+            "SUCCESS" if success else "FAILED", 
+            f"Спроба видалити користувача {user_id} з роутера {router_name}"
+        )
     else:
         bot.reply_to(message, "❌ Помилка: невідома дія")
         user_state_manager.clear_user_state(message.from_user.id)
