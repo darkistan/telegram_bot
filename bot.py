@@ -1,14 +1,17 @@
 import logging
-import json
 import telebot
 from datetime import datetime
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
-from config import (
-    BOT_TOKEN, ADMIN_1_ID, ADMIN_2_ID, ADMIN_BOT_1_TOKEN, ADMIN_BOT_2_TOKEN,
-    ADMIN_1_NOTIFICATIONS_ENABLED, ADMIN_2_NOTIFICATIONS_ENABLED, SCRIPT_PASSWORD_MODE
-)
+from config import BOT_TOKEN, SCRIPT_PASSWORD_MODE
 from fabric import Connection
 from paramiko.ssh_exception import SSHException, AuthenticationException, NoValidConnectionsError
+
+# Імпорт нових модулів
+from constants import MESSAGES, USER_STATES, LOG_MESSAGES, get_user_info, get_current_time, is_positive_confirmation, is_negative_confirmation
+from router_manager import RouterManager
+from user_state_manager import UserStateManager
+from admin_notifier import AdminNotifier
+from keyboard_utils import create_router_keyboard, create_script_keyboard
 
 # Налаштуємо логування з ротацією
 from logging.handlers import RotatingFileHandler
@@ -25,6 +28,11 @@ logging.getLogger().setLevel(logging.INFO)
 
 # Ініціалізація бота для користувачів
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# Ініціалізація менеджерів
+router_manager = RouterManager()
+user_state_manager = UserStateManager()
+admin_notifier = AdminNotifier()
 
 # Клас для роботи з SSH через Fabric
 class RouterSSHClient:
@@ -73,69 +81,44 @@ class RouterSSHClient:
             logging.error(f"Невідома помилка при виконанні скрипта: {e}")
             return f"Невідома помилка при виконанні скрипта: {e}"
 
-# Стан для зберігання даних користувача
-user_state = {}
+# Стан для зберігання даних користувача (замінено на user_state_manager)
 
 # Обробник команди /start
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, 'Привіт! Я бот для управління маршрутизаторами.')
-    logging.info(f"Користувач {message.from_user.username} почав взаємодію з ботом.")
+    bot.reply_to(message, MESSAGES['start'])
+    logging.info(LOG_MESSAGES['user_started'].format(message.from_user.username))
 
 # Обробник команди /id для запиту доступу
 @bot.message_handler(commands=['id'])
 def request_access(message):
-    user_id = message.from_user.id
-    user_name = message.from_user.username
-    user_first_name = message.from_user.first_name
-    user_last_name = message.from_user.last_name
-
-    # Відправляємо повідомлення адміністраторам
-    admin_message = f"Користувач {user_first_name} {user_last_name} ({user_name}) з ID {user_id} запросив доступ.\n" \
-                    f"Будь ласка, відредагуйте файл routers.json для надання доступу."
-
-    # Відправка повідомлення адміністраторам з перевіркою налаштувань
-    if ADMIN_1_NOTIFICATIONS_ENABLED:
-        admin_bot_1 = telebot.TeleBot(ADMIN_BOT_1_TOKEN)
-        admin_bot_1.send_message(ADMIN_1_ID, admin_message)
+    user_info = get_user_info(message)
     
-    if ADMIN_2_NOTIFICATIONS_ENABLED:
-        admin_bot_2 = telebot.TeleBot(ADMIN_BOT_2_TOKEN)
-        admin_bot_2.send_message(ADMIN_2_ID, admin_message)
+    # Відправляємо повідомлення адміністраторам через оптимізований клас
+    admin_notifier.send_access_request_notification(user_info)
 
     # Підтверджуємо запит користувачу
-    bot.reply_to(message, "Ваш запит на доступ відправлено адміністраторам. Очікуйте їх рішення.")
+    bot.reply_to(message, MESSAGES['access_request_sent'])
 
 # Відправка вибору маршрутизаторів
 @bot.message_handler(commands=['run_script'])
 def send_router_selection(message):
-    logging.info(f"Користувач {message.from_user.username} вибрав команду /run_script.")
+    logging.info(LOG_MESSAGES['user_selected_command'].format(message.from_user.username))
     
-    try:
-        with open('routers.json', 'r') as file:
-            routers = json.load(file)
-
-        logging.info(f"Завантажені роутери: {routers}")  # Логуємо всі роутери
-    except Exception as e:
-        logging.error(f"Помилка при завантаженні файлу routers.json: {e}")
-        bot.reply_to(message, "Помилка при завантаженні даних про маршрутизатори.")
+    # Отримуємо роутери користувача з кешу
+    user_routers = router_manager.get_user_routers(message.from_user.id)
+    
+    if not user_routers:
+        bot.reply_to(message, MESSAGES['no_access'])
+        logging.info(LOG_MESSAGES['user_no_access'].format(message.from_user.username))
         return
-
-    # Створюємо InlineKeyboardMarkup для роутерів
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    for router in routers.keys():
-        # Перевіряємо, чи має користувач доступ до роутера
-        if str(message.from_user.id) in routers[router].get('allowed_users', []):
-            # Створюємо кнопки з правильним callback_data, тепер використовуємо router_name в callback_data
-            keyboard.add(InlineKeyboardButton(router, callback_data=f"router_{router}"))
+    
+    # Створюємо клавіатуру для вибору роутера
+    keyboard = create_router_keyboard(user_routers)
     
     # Відправляємо повідомлення з кнопками вибору маршрутизаторів
-    if keyboard.keyboard:
-        bot.reply_to(message, "Виберіть маршрутизатор:", reply_markup=keyboard)
-        user_state[message.chat.id] = {'state': 'waiting_for_router'}  # Зберігаємо стан користувача
-    else:
-        bot.reply_to(message, "У вас немає доступу до роутерів.")
-        logging.info(f"Користувач {message.from_user.username} не має доступу до роутерів.")
+    bot.reply_to(message, MESSAGES['select_router'], reply_markup=keyboard)
+    user_state_manager.set_waiting_for_router(message.from_user.id)
 
 # Обробка вибору маршрутизатора
 @bot.callback_query_handler(func=lambda call: call.data.startswith('router_'))
@@ -145,35 +128,26 @@ def handle_router_selection(call):
     # Логуємо вибір маршрутизатора
     logging.info(f"Користувач вибрав маршрутизатор: {router_name}")
 
-    try:
-        with open('routers.json', 'r') as file:
-            routers = json.load(file)
-            logging.info(f"Завантажені роутери: {routers}")  # Логуємо всі роутери
-
-        router = routers.get(router_name)
-    except Exception as e:
-        logging.error(f"Помилка при завантаженні файлу routers.json: {e}")
-        bot.send_message(call.message.chat.id, "Помилка при завантаженні даних про маршрутизатори.")
+    # Перевіряємо доступ користувача до роутера через кеш
+    if not router_manager.user_has_access(call.from_user.id, router_name):
+        bot.send_message(call.message.chat.id, MESSAGES['router_not_found'])
+        logging.error(f"Маршрутизатор {router_name} не знайдено або користувач {call.from_user.username} не має доступу.")
         return
 
-    if router and str(call.from_user.id) in router.get('allowed_users', []):
-        # Логуємо вибір маршрутизатора
-        logging.info(f"Користувач {call.from_user.username} вибрав маршрутизатор: {router_name}")
+    # Логуємо вибір маршрутизатора
+    logging.info(LOG_MESSAGES['user_selected_router'].format(call.from_user.username, router_name))
 
-        # Зберігаємо вибраний маршрутизатор
-        user_state[call.from_user.id] = {'router': router_name}
+    # Зберігаємо вибраний маршрутизатор
+    user_state_manager.set_waiting_for_script(call.from_user.id, router_name)
 
-        # Створюємо InlineKeyboardMarkup для скриптів
-        keyboard = InlineKeyboardMarkup(row_width=1)
-        for script in router["scripts"]:
-            keyboard.add(InlineKeyboardButton(script, callback_data=f"script_{router_name}_{script}"))
+    # Отримуємо скрипти для роутера з кешу
+    scripts = router_manager.get_router_scripts(router_name)
+    
+    # Створюємо клавіатуру для вибору скрипта
+    keyboard = create_script_keyboard(router_name, scripts)
 
-        # Відправляємо повідомлення з кнопками вибору скрипта
-        bot.send_message(call.message.chat.id, f"Виберіть скрипт для {router_name}:", reply_markup=keyboard)
-        user_state[call.from_user.id]['state'] = 'waiting_for_script'  # Переводимо користувача в стан вибору скрипта
-    else:
-        bot.send_message(call.message.chat.id, "Помилка: маршрутизатор не знайдено або у вас немає доступу.")
-        logging.error(f"Маршрутизатор {router_name} не знайдено або користувач {call.from_user.username} не має доступу.")
+    # Відправляємо повідомлення з кнопками вибору скрипта
+    bot.send_message(call.message.chat.id, MESSAGES['select_script'].format(router_name), reply_markup=keyboard)
 
 # Обробка вибору скрипта
 @bot.callback_query_handler(func=lambda call: call.data.startswith('script_'))
@@ -182,128 +156,148 @@ def handle_script_selection(call):
 
     if SCRIPT_PASSWORD_MODE:
         # Режим з паролем
-        bot.send_message(call.message.chat.id, f"Введіть пароль для виконання скрипта '{script}' на маршрутизаторі {router_name}:")
-        user_state[call.from_user.id]['script'] = script
-        user_state[call.from_user.id]['state'] = 'waiting_for_password'
+        bot.send_message(call.message.chat.id, MESSAGES['password_prompt'].format(script, router_name))
+        user_state_manager.set_waiting_for_password(call.from_user.id, router_name, script)
     else:
         # Режим з підтвердженням
-        bot.send_message(call.message.chat.id, f"Ви дійсно хочете виконати скрипт '{script}' на маршрутизаторі {router_name}?\n\nВідправте 'так' для підтвердження або 'ні' для скасування.")
-        user_state[call.from_user.id]['script'] = script
-        user_state[call.from_user.id]['state'] = 'waiting_for_confirmation'
+        bot.send_message(call.message.chat.id, MESSAGES['confirmation_prompt'].format(script, router_name))
+        user_state_manager.set_waiting_for_confirmation(call.from_user.id, router_name, script)
 
 # Перевірка пароля та виконання скрипта
-@bot.message_handler(func=lambda message: message.chat.id in user_state and user_state[message.chat.id]['state'] == 'waiting_for_password')
+@bot.message_handler(func=lambda message: user_state_manager.is_in_state(message.from_user.id, USER_STATES['waiting_for_password']))
 def verify_password_and_execute(message):
-    router_name = user_state[message.chat.id].get('router')
-    script = user_state[message.chat.id].get('script')
+    router_name = user_state_manager.get_router_name(message.from_user.id)
+    script = user_state_manager.get_script_name(message.from_user.id)
 
-    try:
-        with open('routers.json', 'r') as file:
-            routers = json.load(file)
-
-        router = routers.get(router_name)
-    except Exception as e:
-        logging.error(f"Помилка при завантаженні файлу routers.json: {e}")
-        bot.reply_to(message, "Помилка при завантаженні даних про маршрутизатори.")
+    if not router_name or not script:
+        bot.reply_to(message, MESSAGES['error_router_not_found'])
+        user_state_manager.clear_user_state(message.from_user.id)
         return
 
-    if router:
-        # Перевірка пароля для виконання скрипта
-        if message.text == router["script_password"]:  # Використовуємо script_password для перевірки
-            ssh_client = RouterSSHClient(router["ip"], router["username"], router["ssh_password"], router["ssh_port"])  # Використовуємо ssh_password та ssh_port для підключення
-            result = ssh_client.execute_script(script)
-
-            # Логування
-            execution_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            log_message = f"Скрипт '{script}' був виконаний на маршрутизаторі '{router_name}' в {execution_time}."
-            logging.info(log_message)
-
-            # Повідомлення адміністраторів
-            notify_admins(execution_time, message.from_user.username, router_name, script)
-
-            # Відповідь користувачу
-            bot.reply_to(message, f"Результат виконання скрипта '{script}':\n{result}")
-            
-            # Очищаємо стан користувача після успішного виконання
-            if message.chat.id in user_state:
-                del user_state[message.chat.id]
-        else:
-            bot.reply_to(message, "Невірний пароль для виконання скрипта. Спробуйте ще раз.")
-            logging.warning(f"Користувач {message.from_user.username} ввів невірний пароль для скрипта {script}.")
+    # Перевіряємо пароль через кеш
+    if router_manager.validate_script_password(router_name, message.text):
+        execute_script_successfully(message, router_name, script)
     else:
-        bot.reply_to(message, "Помилка: маршрутизатор не знайдено.")
-        # Очищаємо стан користувача при помилці
-        if message.chat.id in user_state:
-            del user_state[message.chat.id]
+        handle_wrong_password(message, script)
+
+def execute_script_successfully(message, router_name: str, script: str):
+    """Виконує скрипт успішно"""
+    # Отримуємо інформацію для підключення з кешу
+    connection_info = router_manager.get_router_connection_info(router_name)
+    if not connection_info:
+        bot.reply_to(message, MESSAGES['error_router_not_found'])
+        user_state_manager.clear_user_state(message.from_user.id)
+        return
+    
+    # Виконуємо скрипт
+    ssh_client = RouterSSHClient(
+        connection_info['ip'], 
+        connection_info['username'], 
+        connection_info['ssh_password'], 
+        connection_info['ssh_port']
+    )
+    result = ssh_client.execute_script(script)
+
+    # Логування
+    execution_time = get_current_time()
+    log_message = LOG_MESSAGES['script_executed'].format(script, router_name, execution_time)
+    logging.info(log_message)
+
+    # Повідомлення адміністраторів через оптимізований клас
+    admin_notifier.send_script_execution_notification(execution_time, message.from_user.username, router_name, script)
+
+    # Відповідь користувачу
+    bot.reply_to(message, MESSAGES['script_result'].format(script, result))
+    
+    # Очищаємо стан користувача після успішного виконання
+    user_state_manager.clear_user_state(message.from_user.id)
+
+def handle_wrong_password(message, script: str):
+    """Обробляє невірний пароль"""
+    bot.reply_to(message, MESSAGES['wrong_password'])
+    logging.warning(LOG_MESSAGES['wrong_password_attempt'].format(message.from_user.username, script))
 
 # Обробка підтвердження користувача (режим без пароля)
-@bot.message_handler(func=lambda message: message.chat.id in user_state and user_state[message.chat.id]['state'] == 'waiting_for_confirmation')
+@bot.message_handler(func=lambda message: user_state_manager.is_in_state(message.from_user.id, USER_STATES['waiting_for_confirmation']))
 def handle_confirmation_and_execute(message):
-    router_name = user_state[message.chat.id].get('router')
-    script = user_state[message.chat.id].get('script')
+    router_name = user_state_manager.get_router_name(message.from_user.id)
+    script = user_state_manager.get_script_name(message.from_user.id)
     
-    # Перевіряємо відповідь користувача
-    if message.text.lower() in ['так', 'yes', 'y', '1', 'true']:
-        try:
-            with open('routers.json', 'r') as file:
-                routers = json.load(file)
-
-            router = routers.get(router_name)
-        except Exception as e:
-            logging.error(f"Помилка при завантаженні файлу routers.json: {e}")
-            bot.reply_to(message, "Помилка при завантаженні даних про маршрутизатори.")
-            return
-
-        if router:
-            # Виконуємо скрипт без перевірки пароля
-            ssh_client = RouterSSHClient(router["ip"], router["username"], router["ssh_password"], router["ssh_port"])
-            result = ssh_client.execute_script(script)
-
-            # Логування
-            execution_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            log_message = f"Скрипт '{script}' був виконаний на маршрутизаторі '{router_name}' в {execution_time} (режим підтвердження)."
-            logging.info(log_message)
-
-            # Повідомлення адміністраторів
-            notify_admins(execution_time, message.from_user.username, router_name, script)
-
-            # Відповідь користувачу
-            bot.reply_to(message, f"Скрипт '{script}' виконано успішно!\n\nРезультат:\n{result}")
-        else:
-            bot.reply_to(message, "Помилка: маршрутизатор не знайдено.")
-    
-    elif message.text.lower() in ['ні', 'no', 'n', '0', 'false']:
-        bot.reply_to(message, "Виконання скрипта скасовано користувачем.")
-        logging.info(f"Користувач {message.from_user.username} скасував виконання скрипта {script} на маршрутизаторі {router_name}")
-    else:
-        bot.reply_to(message, "Будь ласка, відповідайте 'так' для підтвердження або 'ні' для скасування.")
+    if not router_name or not script:
+        bot.reply_to(message, MESSAGES['error_router_not_found'])
+        user_state_manager.clear_user_state(message.from_user.id)
         return
     
-    # Очищаємо стан користувача
-    if message.chat.id in user_state:
-        del user_state[message.chat.id]
+    # Перевіряємо відповідь користувача
+    if is_positive_confirmation(message.text):
+        execute_script_with_confirmation(message, router_name, script)
+    elif is_negative_confirmation(message.text):
+        handle_script_cancellation(message, router_name, script)
+    else:
+        bot.reply_to(message, MESSAGES['invalid_response'])
+        return
 
-# Повідомлення адміністраторів
-def notify_admins(execution_time: str, username: str, router_name: str, script: str):
-    admin_message = f"🔔 Статус виконання скрипта:\n\n" \
-                    f"📅 Час: {execution_time}\n" \
-                    f"👤 Хто запустив: {username}\n" \
-                    f"🌐 Маршрутизатор: {router_name}\n" \
-                    f"🖥 Скрипт: {script}"
-
-    # Відправляємо повідомлення через боти з перевіркою налаштувань
-    if ADMIN_1_NOTIFICATIONS_ENABLED:
-        admin_bot_1 = telebot.TeleBot(ADMIN_BOT_1_TOKEN)
-        admin_bot_1.send_message(ADMIN_1_ID, admin_message)
+def execute_script_with_confirmation(message, router_name: str, script: str):
+    """Виконує скрипт в режимі підтвердження"""
+    # Отримуємо інформацію для підключення з кешу
+    connection_info = router_manager.get_router_connection_info(router_name)
+    if not connection_info:
+        bot.reply_to(message, MESSAGES['error_router_not_found'])
+        user_state_manager.clear_user_state(message.from_user.id)
+        return
     
-    if ADMIN_2_NOTIFICATIONS_ENABLED:
-        admin_bot_2 = telebot.TeleBot(ADMIN_BOT_2_TOKEN)
-        admin_bot_2.send_message(ADMIN_2_ID, admin_message)
+    # Виконуємо скрипт без перевірки пароля
+    ssh_client = RouterSSHClient(
+        connection_info['ip'], 
+        connection_info['username'], 
+        connection_info['ssh_password'], 
+        connection_info['ssh_port']
+    )
+    result = ssh_client.execute_script(script)
+
+    # Логування
+    execution_time = get_current_time()
+    log_message = LOG_MESSAGES['script_executed_confirmation'].format(script, router_name, execution_time)
+    logging.info(log_message)
+
+    # Повідомлення адміністраторів через оптимізований клас
+    admin_notifier.send_script_execution_notification(execution_time, message.from_user.username, router_name, script)
+
+    # Відповідь користувачу
+    bot.reply_to(message, MESSAGES['script_success'].format(script, result))
+    
+    # Очищаємо стан користувача
+    user_state_manager.clear_user_state(message.from_user.id)
+
+def handle_script_cancellation(message, router_name: str, script: str):
+    """Обробляє скасування виконання скрипта"""
+    bot.reply_to(message, MESSAGES['script_cancelled'])
+    logging.info(LOG_MESSAGES['script_cancelled_by_user'].format(message.from_user.username, script, router_name))
+    
+    # Очищаємо стан користувача
+    user_state_manager.clear_user_state(message.from_user.id)
 
 # Запуск бота
 if __name__ == "__main__":
-    logging.info("Бот запущено.")
-    logging.info(f"Повідомлення для ADMIN_1: {'включені' if ADMIN_1_NOTIFICATIONS_ENABLED else 'відключені'}")
-    logging.info(f"Повідомлення для ADMIN_2: {'включені' if ADMIN_2_NOTIFICATIONS_ENABLED else 'відключені'}")
-    logging.info(f"Режим запуску скриптів: {'з паролем' if SCRIPT_PASSWORD_MODE else 'з підтвердженням'}")
-    bot.polling(none_stop=True)
+    logging.info(LOG_MESSAGES['bot_started'])
+    
+    # Логуємо статус налаштувань
+    notification_status = admin_notifier.get_notification_status()
+    for admin_num, status in notification_status.items():
+        if 'enabled' in admin_num:
+            admin_id = admin_num.split('_')[1]
+            enabled = 'включені' if status else 'відключені'
+            logging.info(LOG_MESSAGES['notifications_status'].format(admin_id, enabled))
+    
+    logging.info(LOG_MESSAGES['script_mode_status'].format(
+        'з паролем' if SCRIPT_PASSWORD_MODE else 'з підтвердженням'
+    ))
+    
+    try:
+        bot.polling(none_stop=True)
+    except KeyboardInterrupt:
+        logging.info("Бот зупинено користувачем")
+        admin_notifier.cleanup()
+    except Exception as e:
+        logging.error(f"Помилка в роботі бота: {e}")
+        admin_notifier.cleanup()
